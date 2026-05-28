@@ -33,33 +33,31 @@ app.post('/render', async (req, res) => {
     const textSvg = buildTextSvg(meme_text.toUpperCase(), WIDTH, HEIGHT);
     composites.push({ input: Buffer.from(textSvg), top: 0, left: 0 });
 
-    // Logo — preserve PNG transparency, use Sharp blend for opacity
+    // Logo — top left, transparent PNG, opacity 0.82
     if (logo_url) {
       try {
         const logoBuffer = await fetchBuffer(logo_url);
+        const logoSize = Math.floor(WIDTH * 0.12); // 130px
+        const padding = Math.floor(WIDTH * 0.06);  // 65px
 
-        // Resize to 110px wide, keep aspect ratio, preserve alpha
         const logoResized = await sharp(logoBuffer)
-          .resize(110, null, { fit: 'inside' })
+          .resize(logoSize, logoSize, { fit: 'inside' })
           .png()
           .toBuffer();
 
         const logoMeta = await sharp(logoResized).metadata();
-        const logoH = logoMeta.height;
-        const logoW = logoMeta.width;
 
-        // Apply 30% opacity via modulate — keep alpha channel intact
-        // We use a composite with an alpha mask at 30% opacity
+        // Preserve alpha, set opacity to 82%
         const logoWithOpacity = await sharp(logoResized)
           .ensureAlpha()
-          .linear(0.30, 0) // multiply alpha by 0.30
+          .linear(0.82, 0)
           .png()
           .toBuffer();
 
         composites.push({
           input: logoWithOpacity,
-          top: HEIGHT - logoH - 20,
-          left: WIDTH - logoW - 20,
+          top: padding,
+          left: padding,
           blend: 'over'
         });
       } catch (e) {
@@ -82,33 +80,30 @@ app.post('/render', async (req, res) => {
 });
 
 function buildTextSvg(text, width, height) {
-  const maxWidth = 960; // 60px padding each side
-  const bottomPadding = 45;
-  const startFontSize = 92;
-  const minFontSize = 48;
-  const maxLines = 3;
+  const padding = width * 0.06;           // 64.8px
+  const maxTextWidth = width - padding * 2; // 950px
+  const startFontSize = Math.floor(width * 0.085); // 91 → 92
 
   let fontSize = startFontSize;
   let lines = [];
 
-  // Reduce font size until text fits in maxLines
-  while (fontSize >= minFontSize) {
-    lines = wrapText(text, maxWidth, fontSize);
-    if (lines.length <= maxLines) break;
+  // Reduce fontSize until text fits — same logic as canvas version
+  do {
+    lines = wrapText(text, maxTextWidth, fontSize);
+    const widest = Math.max(...lines.map(l => measureText(l, fontSize)));
+    if (widest <= maxTextWidth && lines.length <= 3) break;
     fontSize -= 4;
-  }
+  } while (fontSize > 30);
 
-  // Final clamp
-  lines = lines.slice(0, maxLines);
+  lines = lines.slice(0, 3);
 
-  const lineHeight = fontSize * 1.05;
-  const totalH = lines.length * lineHeight;
-  // Position so bottom of text block is 45px from bottom
-  const blockBottom = height - bottomPadding;
-  const startY = blockBottom - totalH + lineHeight;
+  const lineHeight = fontSize * 0.9;
+  const startY = height - padding;
 
-  const textElements = lines.map((line, i) => {
-    const y = Math.round(startY + i * lineHeight);
+  // Lines reversed — bottom up, like canvas version
+  const reversedLines = [...lines].reverse();
+  const textElements = reversedLines.map((line, index) => {
+    const y = Math.round(startY - index * lineHeight);
     return `<text
       x="${width / 2}"
       y="${y}"
@@ -119,7 +114,7 @@ function buildTextSvg(text, width, height) {
       font-weight="900"
       fill="white"
       stroke="black"
-      stroke-width="8"
+      stroke-width="${Math.max(6, Math.floor(fontSize * 0.14))}"
       stroke-linejoin="round"
       paint-order="stroke fill"
     >${escapeXml(line)}</text>`;
@@ -130,24 +125,26 @@ function buildTextSvg(text, width, height) {
 </svg>`;
 }
 
+// Approximate Impact character width — Impact is narrow, ~0.52x fontSize
+function measureText(text, fontSize) {
+  return text.length * fontSize * 0.52;
+}
+
 function wrapText(text, maxWidth, fontSize) {
-  // Impact character width ~0.52 * fontSize
-  const charWidth = fontSize * 0.52;
-  const maxChars = Math.floor(maxWidth / charWidth);
   const words = text.split(' ');
   const lines = [];
-  let current = '';
+  let line = '';
 
-  for (const word of words) {
-    const test = current ? `${current} ${word}` : word;
-    if (test.length > maxChars && current) {
-      lines.push(current);
-      current = word;
+  for (let n = 0; n < words.length; n++) {
+    const testLine = line ? `${line} ${words[n]}` : words[n];
+    if (measureText(testLine, fontSize) > maxWidth && n > 0) {
+      lines.push(line.trim());
+      line = words[n];
     } else {
-      current = test;
+      line = testLine;
     }
   }
-  if (current) lines.push(current);
+  if (line) lines.push(line.trim());
   return lines;
 }
 
