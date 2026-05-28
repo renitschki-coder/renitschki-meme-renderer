@@ -3,60 +3,86 @@ const sharp = require("sharp");
 const axios = require("axios");
 
 const app = express();
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 const PORT = process.env.PORT || 10000;
 
-async function downloadBuffer(url) {
-  const res = await axios.get(url, { responseType: "arraybuffer" });
-  return Buffer.from(res.data);
+// =========================
+// LOGO BACKGROUND REMOVER
+// =========================
+async function prepareLogo(logoBuffer) {
+  const logo = await sharp(logoBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const data = logo.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2];
+    // Schwarzen Hintergrund entfernen
+    if (r < 25 && g < 25 && b < 25) {
+      data[i+3] = 0;
+    }
+    // Keine Opacity-Reduzierung — Logo soll klar sichtbar sein
+  }
+
+  return sharp(data, {
+    raw: { width: logo.info.width, height: logo.info.height, channels: 4 }
+  })
+    .resize({ width: 95 })
+    .png()
+    .toBuffer();
 }
 
-function escapeXml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
+// =========================
+// TEXT WRAP (font-size aware)
+// =========================
 function wrapText(text, fontSize, maxWidth) {
   const words = text.toUpperCase().split(/\s+/);
   const lines = [];
   let line = "";
-  const avg = fontSize * 0.58;
+  const avg = fontSize * 0.58; // Impact: ~0.58x fontSize per char
+
   for (const word of words) {
     const test = line ? `${line} ${word}` : word;
     if (test.length * avg > maxWidth && line) {
-      lines.push(line);
+      lines.push(line.trim());
       line = word;
     } else {
       line = test;
     }
   }
-  if (line) lines.push(line);
-  return lines;
+  if (line) lines.push(line.trim());
+  return lines.slice(0, 3);
 }
 
+// =========================
+// TEXT SVG
+// =========================
 function createTextSvg(text, width, height) {
-  const paddingX = 90;
-  const maxTextWidth = width - paddingX * 2;
-  let fontSize = 96;
+  const sidePadding = 80;
+  const maxWidth = width - sidePadding * 2;
+
+  // Auto font size — reduzieren bis Text in max 3 Zeilen passt
+  let fontSize = Math.floor(width / 10); // Start: ~108px
   const minFontSize = 42;
+
   let lines = [];
   while (fontSize >= minFontSize) {
-    lines = wrapText(text, fontSize, maxTextWidth);
-    const longest = Math.max(...lines.map(l => l.length));
-    if (lines.length <= 3 && longest * fontSize * 0.58 <= maxTextWidth) break;
+    lines = wrapText(text, fontSize, maxWidth);
+    if (lines.length <= 3) break;
     fontSize -= 4;
   }
+
   const lineHeight = fontSize * 1.05;
-  const bottomPadding = 58;
-  const totalHeight = lines.length * lineHeight;
-  const startY = height - bottomPadding - totalHeight + fontSize;
-  const svgText = lines.map((line, i) => `
+  const bottomMargin = 70;
+  const totalTextHeight = lines.length * lineHeight;
+  const startY = height - bottomMargin - totalTextHeight + fontSize;
+
+  const svgText = lines.map((line, index) => `
     <text
       x="${width / 2}"
-      y="${startY + i * lineHeight}"
+      y="${startY + index * lineHeight}"
       text-anchor="middle"
       font-family="Impact, Arial Black, sans-serif"
       font-size="${fontSize}"
@@ -68,44 +94,31 @@ function createTextSvg(text, width, height) {
       stroke-linejoin="round"
     >${escapeXml(line)}</text>
   `).join("");
-  return Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${svgText}</svg>`);
+
+  return Buffer.from(`
+    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      ${svgText}
+    </svg>
+  `);
 }
 
-async function prepareLogo(logoBuffer) {
-  const meta = await sharp(logoBuffer).metadata();
-  // Oberen Teil croppen — entfernt "RenitschKI" Schriftzug unten
-  const cropHeight = Math.round(meta.height * 0.68);
-
-  const logo = await sharp(logoBuffer)
-    .extract({ left: 0, top: 0, width: meta.width, height: cropHeight })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const data = logo.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i+1], b = data[i+2];
-    // Schwarzer Hintergrund transparent
-    if (r < 35 && g < 35 && b < 35) {
-      data[i+3] = 0;
-    } else {
-      // 85% Opacity — sichtbar aber nicht aufdringlich
-      data[i+3] = Math.round(data[i+3] * 0.85);
-    }
-  }
-
-  return sharp(data, {
-    raw: { width: logo.info.width, height: logo.info.height, channels: 4 }
-  })
-    .trim()
-    .resize({ width: 110 })
-    .png()
-    .toBuffer();
+function escapeXml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
+// =========================
+// RENDER CORE
+// =========================
 async function renderMeme(image_url, meme_text, logo_url) {
   const width = 1080, height = 1080;
-  const imageBuffer = await downloadBuffer(image_url);
+
+  const imageBuffer = Buffer.from(
+    (await axios.get(image_url, { responseType: "arraybuffer" })).data
+  );
+
   const baseImage = await sharp(imageBuffer)
     .resize(width, height, { fit: "cover", position: "attention" })
     .jpeg({ quality: 94 })
@@ -115,18 +128,25 @@ async function renderMeme(image_url, meme_text, logo_url) {
 
   if (logo_url) {
     try {
-      const logoBuffer = await downloadBuffer(logo_url);
+      const logoBuffer = Buffer.from(
+        (await axios.get(logo_url, { responseType: "arraybuffer" })).data
+      );
       const logo = await prepareLogo(logoBuffer);
-      overlays.push({ input: logo, left: 40, top: 40, blend: "over" });
+      overlays.push({ input: logo, top: 35, left: 35, blend: "over" });
     } catch(e) { console.warn("Logo failed:", e.message); }
   }
 
-  overlays.push({ input: createTextSvg(meme_text, width, height), left: 0, top: 0, blend: "over" });
+  overlays.push({
+    input: createTextSvg(meme_text.toUpperCase(), width, height),
+    top: 0, left: 0, blend: "over"
+  });
 
-  return sharp(baseImage).composite(overlays).jpeg({ quality: 94 }).toBuffer();
+  return sharp(baseImage).composite(overlays).jpeg({ quality: 95 }).toBuffer();
 }
 
-// Test im Browser
+// =========================
+// TEST ENDPOINT
+// =========================
 app.get("/test", async (req, res) => {
   const meme_text = req.query.text || "MONTAG OHNE KAFFEE";
   const image_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png";
@@ -140,16 +160,21 @@ app.get("/test", async (req, res) => {
   }
 });
 
+// =========================
+// RENDER ENDPOINT
+// =========================
 app.post("/render", async (req, res) => {
   const { image_url, meme_text, logo_url } = req.body;
-  if (!image_url || !meme_text) return res.status(400).json({ error: "image_url und meme_text sind erforderlich" });
+  if (!image_url || !meme_text) {
+    return res.status(400).json({ error: "image_url und meme_text sind erforderlich" });
+  }
   try {
     const result = await renderMeme(image_url, meme_text, logo_url);
     res.set("Content-Type", "image/jpeg");
     res.send(result);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Rendering failed", details: error.message });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Render failed");
   }
 });
 
