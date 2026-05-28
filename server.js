@@ -72,26 +72,30 @@ function createTextSvg(text, width, height) {
 }
 
 async function prepareLogo(logoBuffer) {
-  // Kein Crop — volles Logo verwenden
-  // Schwarze/dunkle Pixel transparent machen, Rest auf 30% Opacity
-  const { data, info } = await sharp(logoBuffer)
+  const meta = await sharp(logoBuffer).metadata();
+  // Oberen Teil croppen — entfernt "RenitschKI" Schriftzug unten
+  const cropHeight = Math.round(meta.height * 0.68);
+
+  const logo = await sharp(logoBuffer)
+    .extract({ left: 0, top: 0, width: meta.width, height: cropHeight })
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
+  const data = logo.data;
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i+1], b = data[i+2];
-    // Schwarzer Hintergrund weg
-    if (r < 40 && g < 40 && b < 40) {
+    // Schwarzer Hintergrund transparent
+    if (r < 35 && g < 35 && b < 35) {
       data[i+3] = 0;
     } else {
-      // Wasserzeichen-Effekt: 30% Opacity
-      data[i+3] = Math.round(data[i+3] * 0.30);
+      // 85% Opacity — sichtbar aber nicht aufdringlich
+      data[i+3] = Math.round(data[i+3] * 0.85);
     }
   }
 
   return sharp(data, {
-    raw: { width: info.width, height: info.height, channels: 4 }
+    raw: { width: logo.info.width, height: logo.info.height, channels: 4 }
   })
     .trim()
     .resize({ width: 110 })
@@ -117,10 +121,7 @@ async function renderMeme(image_url, meme_text, logo_url) {
     } catch(e) { console.warn("Logo failed:", e.message); }
   }
 
-  overlays.push({
-    input: createTextSvg(meme_text, width, height),
-    left: 0, top: 0, blend: "over"
-  });
+  overlays.push({ input: createTextSvg(meme_text, width, height), left: 0, top: 0, blend: "over" });
 
   return sharp(baseImage).composite(overlays).jpeg({ quality: 94 }).toBuffer();
 }
