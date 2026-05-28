@@ -21,7 +21,6 @@ app.post('/render', async (req, res) => {
   }
 
   try {
-    // Load background image
     const imgBuffer = await fetchBuffer(image_url);
     const bgImage = await sharp(imgBuffer)
       .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'center' })
@@ -30,20 +29,18 @@ app.post('/render', async (req, res) => {
 
     const composites = [];
 
-    // Build text SVG
+    // Text SVG
     const textSvg = buildTextSvg(meme_text.toUpperCase(), WIDTH, HEIGHT);
-    composites.push({
-      input: Buffer.from(textSvg),
-      top: 0,
-      left: 0
-    });
+    composites.push({ input: Buffer.from(textSvg), top: 0, left: 0 });
 
-    // Load and composite logo
+    // Logo — preserve PNG transparency, use Sharp blend for opacity
     if (logo_url) {
       try {
         const logoBuffer = await fetchBuffer(logo_url);
+
+        // Resize to 110px wide, keep aspect ratio, preserve alpha
         const logoResized = await sharp(logoBuffer)
-          .resize(120, null, { fit: 'inside' })
+          .resize(110, null, { fit: 'inside' })
           .png()
           .toBuffer();
 
@@ -51,21 +48,19 @@ app.post('/render', async (req, res) => {
         const logoH = logoMeta.height;
         const logoW = logoMeta.width;
 
-        // Semi-transparent logo via raw composite trick
-        const logoDimmed = await sharp(logoResized)
-          .composite([{
-            input: Buffer.from(
-              `<svg width="${logoW}" height="${logoH}"><rect width="${logoW}" height="${logoH}" fill="black" opacity="0.70"/></svg>`
-            ),
-            blend: 'dest-in'
-          }])
+        // Apply 30% opacity via modulate — keep alpha channel intact
+        // We use a composite with an alpha mask at 30% opacity
+        const logoWithOpacity = await sharp(logoResized)
+          .ensureAlpha()
+          .linear(0.30, 0) // multiply alpha by 0.30
           .png()
           .toBuffer();
 
         composites.push({
-          input: logoDimmed,
-          top: HEIGHT - logoH - 18,
-          left: WIDTH - logoW - 18
+          input: logoWithOpacity,
+          top: HEIGHT - logoH - 20,
+          left: WIDTH - logoW - 20,
+          blend: 'over'
         });
       } catch (e) {
         console.warn('Logo failed:', e.message);
@@ -87,12 +82,30 @@ app.post('/render', async (req, res) => {
 });
 
 function buildTextSvg(text, width, height) {
-  const maxWidth = width - 80;
-  const fontSize = calcFontSize(text, maxWidth);
-  const lineHeight = fontSize * 1.2;
-  const lines = wrapText(text, maxWidth, fontSize);
+  const maxWidth = 960; // 60px padding each side
+  const bottomPadding = 45;
+  const startFontSize = 92;
+  const minFontSize = 48;
+  const maxLines = 3;
+
+  let fontSize = startFontSize;
+  let lines = [];
+
+  // Reduce font size until text fits in maxLines
+  while (fontSize >= minFontSize) {
+    lines = wrapText(text, maxWidth, fontSize);
+    if (lines.length <= maxLines) break;
+    fontSize -= 4;
+  }
+
+  // Final clamp
+  lines = lines.slice(0, maxLines);
+
+  const lineHeight = fontSize * 1.05;
   const totalH = lines.length * lineHeight;
-  const startY = height - 38 - totalH + lineHeight;
+  // Position so bottom of text block is 45px from bottom
+  const blockBottom = height - bottomPadding;
+  const startY = blockBottom - totalH + lineHeight;
 
   const textElements = lines.map((line, i) => {
     const y = Math.round(startY + i * lineHeight);
@@ -117,20 +130,9 @@ function buildTextSvg(text, width, height) {
 </svg>`;
 }
 
-function calcFontSize(text, maxWidth) {
-  // Approximate: Impact ~0.55 * fontSize per char
-  const words = text.split(' ');
-  let fontSize = 110;
-  const longestWord = words.reduce((a, b) => a.length > b.length ? a : b, '');
-  const charsPerLine = Math.floor(maxWidth / (fontSize * 0.55));
-  if (longestWord.length > charsPerLine) {
-    fontSize = Math.floor(maxWidth / (longestWord.length * 0.55));
-  }
-  return Math.max(60, Math.min(fontSize, 120));
-}
-
 function wrapText(text, maxWidth, fontSize) {
-  const charWidth = fontSize * 0.55;
+  // Impact character width ~0.52 * fontSize
+  const charWidth = fontSize * 0.52;
   const maxChars = Math.floor(maxWidth / charWidth);
   const words = text.split(' ');
   const lines = [];
@@ -146,9 +148,7 @@ function wrapText(text, maxWidth, fontSize) {
     }
   }
   if (current) lines.push(current);
-
-  // Max 3 lines
-  return lines.slice(0, 3);
+  return lines;
 }
 
 function escapeXml(str) {
