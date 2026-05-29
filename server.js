@@ -20,17 +20,19 @@ function escapeXml(text) {
     .replace(/"/g, "&quot;");
 }
 
-function estimateTextWidth(text, fontSize) {
-  return text.length * fontSize * 0.58;
+function estimateTextWidth(text, fontSize, font) {
+  // Orbitron is slightly wider than Impact
+  const factor = font === "orbitron" ? 0.65 : 0.58;
+  return text.length * fontSize * factor;
 }
 
-function wrapText(text, fontSize, maxWidth) {
-  const words = text.toUpperCase().split(/\s+/);
+function wrapText(text, fontSize, maxWidth, font) {
+  const words = (font === "orbitron" ? text : text.toUpperCase()).split(/\s+/);
   const lines = [];
   let line = "";
   for (const word of words) {
     const testLine = line ? `${line} ${word}` : word;
-    if (estimateTextWidth(testLine, fontSize) > maxWidth && line) {
+    if (estimateTextWidth(testLine, fontSize, font) > maxWidth && line) {
       lines.push(line);
       line = word;
     } else {
@@ -41,38 +43,57 @@ function wrapText(text, fontSize, maxWidth) {
   return lines;
 }
 
-function createTextSvg(text, width, height) {
-  const sidePadding = 90;
+function createTextSvg(text, width, height, font = "impact") {
+  const isOrbitron = font === "orbitron";
+  const sidePadding = isOrbitron ? 60 : 90;
   const maxTextWidth = width - sidePadding * 2;
   const maxLines = 3;
 
-  let fontSize = Math.floor(width * 0.095);
+  // Orbitron starts slightly smaller since it's wider
+  let fontSize = Math.floor(width * (isOrbitron ? 0.08 : 0.095));
   const minFontSize = Math.floor(width * 0.04);
   let lines = [];
 
   while (fontSize >= minFontSize) {
-    lines = wrapText(text, fontSize, maxTextWidth);
-    const tooWide = lines.some(l => estimateTextWidth(l, fontSize) > maxTextWidth);
+    lines = wrapText(text, fontSize, maxTextWidth, font);
+    const tooWide = lines.some(l => estimateTextWidth(l, fontSize, font) > maxTextWidth);
     if (lines.length <= maxLines && !tooWide) break;
     fontSize -= 4;
   }
 
   lines = lines.slice(0, maxLines);
 
-  const lineHeight = fontSize * 1.05;
-  const bottomMargin = 60;
+  const lineHeight = fontSize * (isOrbitron ? 1.2 : 1.05);
+  const bottomMargin = isOrbitron ? 80 : 60;
   const totalHeight = lines.length * lineHeight;
   const firstY = height - bottomMargin - totalHeight + fontSize;
-  const strokeWidth = Math.max(8, fontSize * 0.1);
+  const strokeWidth = Math.max(6, fontSize * (isOrbitron ? 0.07 : 0.1));
+
+  const fontFamily = isOrbitron
+    ? "Orbitron, Arial Black, sans-serif"
+    : "Impact, Arial Black, sans-serif";
+
+  const fontStyle = isOrbitron
+    ? `font-weight="700" letter-spacing="${Math.floor(fontSize * 0.05)}"`
+    : `font-weight="900"`;
+
+  // Google Fonts embed for Orbitron
+  const fontEmbed = isOrbitron
+    ? `<defs>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&amp;display=swap');
+        </style>
+       </defs>`
+    : "";
 
   const textElements = lines.map((line, index) => `
     <text
       x="${width / 2}"
       y="${firstY + index * lineHeight}"
       text-anchor="middle"
-      font-family="Impact, Arial Black, sans-serif"
+      font-family="${fontFamily}"
       font-size="${fontSize}"
-      font-weight="900"
+      ${fontStyle}
       fill="white"
       stroke="black"
       stroke-width="${strokeWidth}"
@@ -83,6 +104,7 @@ function createTextSvg(text, width, height) {
 
   return Buffer.from(`
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      ${fontEmbed}
       ${textElements}
     </svg>
   `);
@@ -98,9 +120,8 @@ async function prepareLogo(logoBuffer) {
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i+1], b = data[i+2];
     if (r < 20 && g < 20 && b < 20) {
-      data[i+3] = 0; // schwarzen Hintergrund transparent
+      data[i+3] = 0;
     }
-    // Keine Opacity-Reduzierung — Logo bleibt original
   }
 
   return sharp(data, {
@@ -111,8 +132,8 @@ async function prepareLogo(logoBuffer) {
     .toBuffer();
 }
 
-async function renderMeme(image_url, meme_text, logo_url) {
-  const width = 1080, height = 1080;
+async function renderMeme(image_url, meme_text, logo_url, font = "impact", size = 1080) {
+  const width = size, height = size;
   const imageBuffer = await downloadBuffer(image_url);
   const baseImage = await sharp(imageBuffer)
     .resize(width, height, { fit: "cover", position: "attention" })
@@ -129,21 +150,64 @@ async function renderMeme(image_url, meme_text, logo_url) {
     } catch(e) { console.warn("Logo failed:", e.message); }
   }
 
-  overlays.push({
-    input: createTextSvg(meme_text, width, height),
-    left: 0, top: 0, blend: "over"
-  });
+  // Only add text overlay if meme_text is provided
+  if (meme_text && meme_text.trim()) {
+    overlays.push({
+      input: createTextSvg(meme_text, width, height, font),
+      left: 0, top: 0, blend: "over"
+    });
+  }
 
   return sharp(baseImage).composite(overlays).jpeg({ quality: 95 }).toBuffer();
 }
 
-// Test im Browser
+// ─── Original GDW endpoint (Impact font, no changes) ───────────────────────
+app.post("/render", async (req, res) => {
+  const { image_url, meme_text, logo_url } = req.body;
+  if (!image_url || !meme_text) {
+    return res.status(400).json({ error: "image_url und meme_text sind erforderlich" });
+  }
+  try {
+    const result = await renderMeme(image_url, meme_text, logo_url, "impact");
+    res.set("Content-Type", "image/jpeg");
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Render failed", details: error.message });
+  }
+});
+
+// ─── New RenitschKI endpoint ────────────────────────────────────────────────
+// font: "orbitron" | "impact" (default: orbitron)
+// meme_text: optional — if empty, just resizes image with optional logo
+// logo_url: optional
+app.post("/render-rk", async (req, res) => {
+  const { image_url, meme_text, logo_url, font } = req.body;
+  if (!image_url) {
+    return res.status(400).json({ error: "image_url ist erforderlich" });
+  }
+  try {
+    const result = await renderMeme(
+      image_url,
+      meme_text || "",
+      logo_url || null,
+      font || "orbitron"
+    );
+    res.set("Content-Type", "image/jpeg");
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Render failed", details: error.message });
+  }
+});
+
+// ─── Test endpoints ─────────────────────────────────────────────────────────
 app.get("/test", async (req, res) => {
   const meme_text = req.query.text || "MONTAG OHNE KAFFEE";
   const image_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png";
   const logo_url = "https://res.cloudinary.com/deerouw5e/image/upload/RenitschKI_Logo_pwk8zq.png";
   try {
-    const result = await renderMeme(image_url, meme_text, logo_url);
+    const result = await renderMeme(image_url, meme_text, logo_url, "impact");
     res.set("Content-Type", "image/jpeg");
     res.send(result);
   } catch (err) {
@@ -151,18 +215,16 @@ app.get("/test", async (req, res) => {
   }
 });
 
-app.post("/render", async (req, res) => {
-  const { image_url, meme_text, logo_url } = req.body;
-  if (!image_url || !meme_text) {
-    return res.status(400).json({ error: "image_url und meme_text sind erforderlich" });
-  }
+app.get("/test-rk", async (req, res) => {
+  const meme_text = req.query.text || "KEIN KAFFEE KEIN LEBEN";
+  const image_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png";
+  const logo_url = "https://res.cloudinary.com/deerouw5e/image/upload/RenitschKI_Logo_pwk8zq.png";
   try {
-    const result = await renderMeme(image_url, meme_text, logo_url);
+    const result = await renderMeme(image_url, meme_text, logo_url, "orbitron");
     res.set("Content-Type", "image/jpeg");
     res.send(result);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Render failed", details: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
