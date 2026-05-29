@@ -68,7 +68,7 @@ function createTextOverlaySVG(text, width, height, font = "orbitron") {
   const sidePadding = 80;
   const maxTextWidth = width - sidePadding * 2;
   const maxLines = 3;
-  const bottomMargin = 80;
+  const bottomMargin = isOrbitron ? 160 : 80;
 
   // Auto-scale font size
   let fontSize = Math.floor(width * (isOrbitron ? 0.09 : 0.10));
