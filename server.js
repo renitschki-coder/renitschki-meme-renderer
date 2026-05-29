@@ -112,7 +112,6 @@ async function renderMeme(image_url, meme_text, logo_url, font = "orbitron") {
   }
   return sharp(baseImage).composite(overlays).jpeg({ quality: 95 }).toBuffer();
 }
-// ─── GDW endpoint ────────────────────────────────────────────────────────────
 app.post("/render", async (req, res) => {
   const { image_url, meme_text, logo_url } = req.body;
   if (!image_url || !meme_text) return res.status(400).json({ error: "image_url und meme_text sind erforderlich" });
@@ -125,7 +124,6 @@ app.post("/render", async (req, res) => {
     res.status(500).json({ error: "Render failed", details: error.message });
   }
 });
-// ─── RenitschKI endpoint ─────────────────────────────────────────────────────
 app.post("/render-rk", async (req, res) => {
   const { image_url, meme_text, logo_url, font } = req.body;
   if (!image_url) return res.status(400).json({ error: "image_url ist erforderlich" });
@@ -138,7 +136,6 @@ app.post("/render-rk", async (req, res) => {
     res.status(500).json({ error: "Render failed", details: error.message });
   }
 });
-// ─── Test endpoints ──────────────────────────────────────────────────────────
 app.get("/test", async (req, res) => {
   const meme_text = req.query.text || "MONTAG OHNE KAFFEE";
   const image_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png";
@@ -159,7 +156,6 @@ app.get("/test-rk", async (req, res) => {
     res.send(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-// ─── Meme to go ──────────────────────────────────────────────────────────────
 const MEME_TO_GO_WITZE = [
   "Wissenschaftler haben herausgefunden... – Und sind wieder hineingegangen.",
   "Heute war Schrottwichteln im Kindergarten – Wir sind die neuen Eltern von Kevin.",
@@ -213,7 +209,6 @@ const MEME_TO_GO_WITZE = [
   "Was ist grün und sitzt auf dem Klo? – Ein Kacktus.",
   "Was sagt die Null zur Acht? – Schicker Gürtel."
 ];
-
 const MEME_TO_GO_BACKGROUNDS = [
   "https://res.cloudinary.com/deerouw5e/image/upload/v1780059859/gdw/meme_1780059859.png",
   "https://res.cloudinary.com/deerouw5e/image/upload/v1780057997/gdw/meme_1780057997.png",
@@ -221,21 +216,16 @@ const MEME_TO_GO_BACKGROUNDS = [
   "https://res.cloudinary.com/deerouw5e/image/upload/v1780052806/gdw/meme_1780052806.png",
   "https://res.cloudinary.com/deerouw5e/image/upload/v1780049543/gdw/meme_1780049543.png"
 ];
-
 const MEME_TO_GO_LOGO = "https://res.cloudinary.com/deerouw5e/image/upload/v1780064050/copy_of_renitschki_logo_plain_cro7vq.png";
-
 app.options("/meme-to-go", (req, res) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type");
   res.sendStatus(204);
 });
-
 async function generateImageForJoke(joke) {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) throw new Error("OPENAI_API_KEY not set");
-
-  // Simple, safe prompt - no joke text, just a funny scene
   const themes = [
     "a funny cartoon scene with animals in an office",
     "a colorful comic scene in a supermarket",
@@ -250,14 +240,11 @@ async function generateImageForJoke(joke) {
   ];
   const theme = themes[Math.floor(Math.random() * themes.length)];
   const prompt = `${theme}. Vibrant colors, funny, no text in image, clean meme background style.`;
-
-  // Try dall-e-3 first, fall back to dall-e-2
   for (const model of ["dall-e-3", "dall-e-2"]) {
     try {
       const size = model === "dall-e-3" ? "1024x1024" : "512x512";
-      const body = { model, prompt, n: 1, size, response_format: "url" };
+      const body = { model, prompt, n: 1, size };
       if (model === "dall-e-3") body.quality = "standard";
-
       const response = await axios.post(
         "https://api.openai.com/v1/images/generations",
         body,
@@ -273,18 +260,14 @@ async function generateImageForJoke(joke) {
       return response.data.data[0].url;
     } catch(e) {
       console.warn(`${model} failed: ${e.response?.data?.error?.message || e.message}`);
-      if (model === "dall-e-2") throw e; // both failed
+      if (model === "dall-e-2") throw e;
     }
   }
 }
-
 app.post("/meme-to-go", async (req, res) => {
   const witz = MEME_TO_GO_WITZE[Math.floor(Math.random() * MEME_TO_GO_WITZE.length)];
-
   let imageUrl = null;
   let usedFallback = false;
-
-  // Try OpenAI first
   try {
     console.log("Generating image for joke:", witz.substring(0, 50));
     imageUrl = await generateImageForJoke(witz);
@@ -294,7 +277,6 @@ app.post("/meme-to-go", async (req, res) => {
     imageUrl = MEME_TO_GO_BACKGROUNDS[Math.floor(Math.random() * MEME_TO_GO_BACKGROUNDS.length)];
     usedFallback = true;
   }
-
   try {
     const result = await renderMeme(imageUrl, witz, MEME_TO_GO_LOGO, "orbitron");
     res.set("Content-Type", "image/jpeg");
@@ -306,6 +288,5 @@ app.post("/meme-to-go", async (req, res) => {
     res.status(500).json({ error: "Render failed", details: error.message });
   }
 });
-// ─── Root ─────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.send("RenitschKI Meme Renderer läuft 🚀"));
 app.listen(PORT, () => console.log(`Meme Renderer running on port ${PORT}`));
