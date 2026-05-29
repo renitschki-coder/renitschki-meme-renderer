@@ -1,7 +1,6 @@
 const express = require("express");
 const sharp = require("sharp");
 const axios = require("axios");
-const fs = require("fs");
 const path = require("path");
 const TextToSVG = require("text-to-svg");
 const app = express();
@@ -11,7 +10,7 @@ let orbitronTTSVG = null;
 let impactTTSVG = null;
 try {
   orbitronTTSVG = TextToSVG.loadSync(path.join(__dirname, "Orbitron-Bold.ttf"));
-  console.log("Orbitron font loaded via text-to-svg ✅");
+  console.log("Orbitron font loaded ✅");
 } catch(e) { console.warn("Orbitron font not found:", e.message); }
 try {
   impactTTSVG = TextToSVG.loadSync("/usr/share/fonts/truetype/msttcorefonts/Impact.ttf");
@@ -113,63 +112,57 @@ app.post("/render-rk", async (req, res) => {
   } catch (error) { res.status(500).json({ error: "Render failed", details: error.message }); }
 });
 app.get("/test-rk", async (req, res) => {
-  const meme_text = req.query.text || "Kein Kaffee kein Leben";
-  const image_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png";
-  const logo_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1780061506/Renitschki_Logo_plain_cro7vq.png";
   try {
-    const result = await renderMeme(image_url, meme_text, logo_url, "orbitron");
+    const result = await renderMeme(
+      "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png",
+      req.query.text || "Kein Kaffee kein Leben",
+      "https://res.cloudinary.com/deerouw5e/image/upload/v1780061506/Renitschki_Logo_plain_cro7vq.png",
+      "orbitron"
+    );
     res.set("Content-Type", "image/jpeg"); res.send(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
-// ─── DEBUG: Test OpenAI direkt ────────────────────────────────────────────────
 app.get("/debug-openai", async (req, res) => {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) return res.json({ error: "OPENAI_API_KEY not set", env: Object.keys(process.env).filter(k => k.includes('OPEN')) });
+  const raw = process.env.OPENAI_API_KEY || "";
+  const clean = raw.trim().replace(/[\n\r\t]/g, "");
+  const info = { raw_len: raw.length, clean_len: clean.length, prefix: clean.substring(0, 20), suffix: clean.substring(clean.length-6), has_newline: raw.includes("\n"), has_space: raw.includes(" ") };
   try {
-    const response = await axios.post(
+    const r = await axios.post(
       "https://api.openai.com/v1/images/generations",
       { model: "dall-e-3", prompt: "a funny cartoon cat", n: 1, size: "1024x1024" },
-      { headers: { "Authorization": `Bearer ${openaiKey.substring(0,20)}...`, "Content-Type": "application/json" }, timeout: 30000 }
+      { headers: { "Authorization": `Bearer ${clean}`, "Content-Type": "application/json" }, timeout: 30000 }
     );
-    res.json({ success: true, url: response.data.data[0].url });
+    res.json({ success: true, url: r.data.data[0].url, info });
   } catch(e) {
-    res.json({
-      error: e.message,
-      status: e.response?.status,
-      openai_error: e.response?.data?.error,
-      key_prefix: openaiKey ? openaiKey.substring(0, 15) + "..." : "NOT SET"
-    });
+    res.json({ error: e.message, status: e.response?.status, openai_error: e.response?.data?.error, info });
   }
 });
-
-// ─── Meme to go ───────────────────────────────────────────────────────────────
 const MEME_TO_GO_WITZE = [
-  "Wissenschaftler haben herausgefunden... – Und sind wieder hineingegangen.",
-  "Wie nennt man einen Bumerang, der nicht zurückkommt? – Stock.",
-  "Wie heißt die Frau von Herkules? – Frau Kules.",
-  "Warum fliegen Vögel im Winter nach Süden? – Weil es schneller geht als Laufen.",
-  "Wie nennt man einen Hund, der zaubern kann? – Labrakadabrador.",
-  "Ich wollte einen Witz über die Deutsche Bahn machen, aber der kommt nicht an.",
-  "Wie nennt man ein helles Mammut? – Hellmut.",
-  "Warum summen Bienen? – Weil sie den Text nicht kennen.",
-  "Wie heißt der Bruder von Elvis? – Zwölvis.",
-  "Was sagt das Schwein zum anderen? – Es ist Wurst, was aus uns wird.",
-  "Welche Sprache wird in der Sauna gesprochen? – Schwitzerdeutsch.",
-  "Wie nennt man ein Rudel aggressiver Wölfe? – Wolfgang.",
-  "Was steht auf dem Grab eines Mathematikers? – Damit hat er nicht gerechnet.",
-  "Treffen sich zwei Jäger – Beide tot.",
-  "Wie machen Igel Liebe? – Megavorsichtig.",
-  "Kommt ein Skelett zum Arzt: Bisschen spät, was?",
-  "Wie heißt ein Bär, der fliegen kann? – Hubschraubär.",
-  "Magst du Chemie-Witze? – Chlor!",
-  "Was macht ein arbeitsloser Schauspieler? – Spielt keine Rolle.",
-  "Wie nennt man ein Überraschungsessen? – Topf Secret.",
-  "Was passiert, wenn man nachts in der Bäckerei anruft? – Die Mehlbox geht dran.",
-  "Was sagt die Null zur Acht? – Schicker Gürtel.",
-  "Wie heißt ein Ritter ohne Helm? – Willhelm.",
-  "Was ist weiß und stört beim Essen? – Eine Lawine.",
-  "Was macht ein Clown im Büro? – Faxen."
+  "Wissenschaftler haben herausgefunden... \u2013 Und sind wieder hineingegangen.",
+  "Wie nennt man einen Bumerang, der nicht zur\u00fcckkommt? \u2013 Stock.",
+  "Wie hei\u00dft die Frau von Herkules? \u2013 Frau Kules.",
+  "Warum fliegen V\u00f6gel im Winter nach S\u00fcden? \u2013 Weil es schneller geht als Laufen.",
+  "Wie nennt man einen Hund, der zaubern kann? \u2013 Labrakadabrador.",
+  "Ich wollte einen Witz \u00fcber die Deutsche Bahn machen, aber der kommt nicht an.",
+  "Wie nennt man ein helles Mammut? \u2013 Hellmut.",
+  "Warum summen Bienen? \u2013 Weil sie den Text nicht kennen.",
+  "Wie hei\u00dft der Bruder von Elvis? \u2013 Zw\u00f6lvis.",
+  "Was sagt das Schwein zum anderen? \u2013 Es ist Wurst, was aus uns wird.",
+  "Welche Sprache wird in der Sauna gesprochen? \u2013 Schwitzerdeutsch.",
+  "Wie nennt man ein Rudel aggressiver W\u00f6lfe? \u2013 Wolfgang.",
+  "Was steht auf dem Grab eines Mathematikers? \u2013 Damit hat er nicht gerechnet.",
+  "Treffen sich zwei J\u00e4ger \u2013 Beide tot.",
+  "Wie machen Igel Liebe? \u2013 Megavorsichtig.",
+  "Kommt ein Skelett zum Arzt: Bisschen sp\u00e4t, was?",
+  "Wie hei\u00dft ein B\u00e4r, der fliegen kann? \u2013 Hubschraub\u00e4r.",
+  "Magst du Chemie-Witze? \u2013 Chlor!",
+  "Was macht ein arbeitsloser Schauspieler? \u2013 Spielt keine Rolle.",
+  "Wie nennt man ein \u00dcberraschungsessen? \u2013 Topf Secret.",
+  "Was passiert, wenn man nachts in der B\u00e4ckerei anruft? \u2013 Die Mehlbox geht dran.",
+  "Was sagt die Null zur Acht? \u2013 Schicker G\u00fcrtel.",
+  "Wie hei\u00dft ein Ritter ohne Helm? \u2013 Willhelm.",
+  "Was ist wei\u00df und st\u00f6rt beim Essen? \u2013 Eine Lawine.",
+  "Was macht ein Clown im B\u00fcro? \u2013 Faxen."
 ];
 const MEME_TO_GO_BACKGROUNDS = [
   "https://res.cloudinary.com/deerouw5e/image/upload/v1780059859/gdw/meme_1780059859.png",
@@ -179,17 +172,16 @@ const MEME_TO_GO_BACKGROUNDS = [
   "https://res.cloudinary.com/deerouw5e/image/upload/v1780049543/gdw/meme_1780049543.png"
 ];
 const MEME_TO_GO_LOGO = "https://res.cloudinary.com/deerouw5e/image/upload/v1780064050/copy_of_renitschki_logo_plain_cro7vq.png";
-
 app.options("/meme-to-go", (req, res) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type");
   res.sendStatus(204);
 });
-
 async function generateImageForJoke(joke) {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) throw new Error("OPENAI_API_KEY not set");
+  const raw = process.env.OPENAI_API_KEY;
+  if (!raw) throw new Error("OPENAI_API_KEY not set");
+  const openaiKey = raw.trim().replace(/[\n\r\t]/g, "");
   const themes = [
     "a funny cartoon scene with animals in an office",
     "a colorful comic scene in a supermarket",
@@ -223,7 +215,6 @@ async function generateImageForJoke(joke) {
     }
   }
 }
-
 app.post("/meme-to-go", async (req, res) => {
   const witz = MEME_TO_GO_WITZE[Math.floor(Math.random() * MEME_TO_GO_WITZE.length)];
   let imageUrl = null;
@@ -246,6 +237,5 @@ app.post("/meme-to-go", async (req, res) => {
     res.status(500).json({ error: "Render failed", details: error.message });
   }
 });
-
-app.get("/", (req, res) => res.send("RenitschKI Meme Renderer läuft 🚀"));
+app.get("/", (req, res) => res.send("RenitschKI Meme Renderer l\u00e4uft \ud83d\ude80"));
 app.listen(PORT, () => console.log(`Meme Renderer running on port ${PORT}`));
