@@ -235,29 +235,47 @@ async function generateImageForJoke(joke) {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) throw new Error("OPENAI_API_KEY not set");
 
-  // Create a visual prompt from the joke
-  const prompt = `A funny, colorful meme background image that visually represents this German joke concept: "${joke}". No text in the image. Vibrant, high contrast, suitable for a meme. Comic style or photorealistic.`;
+  // Simple, safe prompt - no joke text, just a funny scene
+  const themes = [
+    "a funny cartoon scene with animals in an office",
+    "a colorful comic scene in a supermarket",
+    "a humorous illustration of people waiting at a bus stop",
+    "a funny cartoon of a dog doing human activities",
+    "a colorful illustration of robots having a picnic",
+    "a humorous cartoon of cats running a business meeting",
+    "a funny scene of penguins at a beach bar",
+    "a colorful illustration of bears hiking in the mountains",
+    "a humorous cartoon of frogs playing football",
+    "a funny scene of squirrels working in a bakery"
+  ];
+  const theme = themes[Math.floor(Math.random() * themes.length)];
+  const prompt = `${theme}. Vibrant colors, funny, no text in image, clean meme background style.`;
 
-  const response = await axios.post(
-    "https://api.openai.com/v1/images/generations",
-    {
-      model: "dall-e-3",
-      prompt: prompt,
-      n: 1,
-      size: "1024x1024",
-      quality: "standard",
-      response_format: "url"
-    },
-    {
-      headers: {
-        "Authorization": `Bearer ${openaiKey}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 30000
+  // Try dall-e-3 first, fall back to dall-e-2
+  for (const model of ["dall-e-3", "dall-e-2"]) {
+    try {
+      const size = model === "dall-e-3" ? "1024x1024" : "512x512";
+      const body = { model, prompt, n: 1, size, response_format: "url" };
+      if (model === "dall-e-3") body.quality = "standard";
+
+      const response = await axios.post(
+        "https://api.openai.com/v1/images/generations",
+        body,
+        {
+          headers: {
+            "Authorization": `Bearer ${openaiKey}`,
+            "Content-Type": "application/json"
+          },
+          timeout: 45000
+        }
+      );
+      console.log(`Image generated with ${model} ✅`);
+      return response.data.data[0].url;
+    } catch(e) {
+      console.warn(`${model} failed: ${e.response?.data?.error?.message || e.message}`);
+      if (model === "dall-e-2") throw e; // both failed
     }
-  );
-
-  return response.data.data[0].url;
+  }
 }
 
 app.post("/meme-to-go", async (req, res) => {
