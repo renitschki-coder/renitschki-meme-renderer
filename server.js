@@ -231,16 +231,60 @@ app.options("/meme-to-go", (req, res) => {
   res.sendStatus(204);
 });
 
+async function generateImageForJoke(joke) {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) throw new Error("OPENAI_API_KEY not set");
+
+  // Create a visual prompt from the joke
+  const prompt = `A funny, colorful meme background image that visually represents this German joke concept: "${joke}". No text in the image. Vibrant, high contrast, suitable for a meme. Comic style or photorealistic.`;
+
+  const response = await axios.post(
+    "https://api.openai.com/v1/images/generations",
+    {
+      model: "dall-e-3",
+      prompt: prompt,
+      n: 1,
+      size: "1024x1024",
+      quality: "standard",
+      response_format: "url"
+    },
+    {
+      headers: {
+        "Authorization": `Bearer ${openaiKey}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 30000
+    }
+  );
+
+  return response.data.data[0].url;
+}
+
 app.post("/meme-to-go", async (req, res) => {
   const witz = MEME_TO_GO_WITZE[Math.floor(Math.random() * MEME_TO_GO_WITZE.length)];
-  const bg = MEME_TO_GO_BACKGROUNDS[Math.floor(Math.random() * MEME_TO_GO_BACKGROUNDS.length)];
+
+  let imageUrl = null;
+  let usedFallback = false;
+
+  // Try OpenAI first
   try {
-    const result = await renderMeme(bg, witz, MEME_TO_GO_LOGO, "orbitron");
+    console.log("Generating image for joke:", witz.substring(0, 50));
+    imageUrl = await generateImageForJoke(witz);
+    console.log("OpenAI image generated ✅");
+  } catch (e) {
+    console.warn("OpenAI image generation failed, using Cloudinary fallback:", e.message);
+    imageUrl = MEME_TO_GO_BACKGROUNDS[Math.floor(Math.random() * MEME_TO_GO_BACKGROUNDS.length)];
+    usedFallback = true;
+  }
+
+  try {
+    const result = await renderMeme(imageUrl, witz, MEME_TO_GO_LOGO, "orbitron");
     res.set("Content-Type", "image/jpeg");
     res.set("Access-Control-Allow-Origin", "*");
+    res.set("X-Used-Fallback", usedFallback ? "true" : "false");
     res.send(result);
   } catch (error) {
-    console.error("meme-to-go error:", error);
+    console.error("meme-to-go render error:", error);
     res.status(500).json({ error: "Render failed", details: error.message });
   }
 });
