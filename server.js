@@ -3,20 +3,31 @@ const sharp = require("sharp");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
+const TextToSVG = require("text-to-svg");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 
 const PORT = process.env.PORT || 3000;
 
-// Load Orbitron font as base64 for SVG embedding
-let orbitronBase64 = "";
+// Load fonts
+let orbitronTTSVG = null;
+let impactTTSVG = null;
+
 try {
-  const fontPath = path.join(__dirname, "Orbitron-Bold.ttf");
-  orbitronBase64 = fs.readFileSync(fontPath).toString("base64");
-  console.log("Orbitron font loaded ✅");
+  orbitronTTSVG = TextToSVG.loadSync(path.join(__dirname, "Orbitron-Bold.ttf"));
+  console.log("Orbitron font loaded via text-to-svg ✅");
 } catch(e) {
   console.warn("Orbitron font not found:", e.message);
+}
+
+try {
+  // Impact fallback - use system or skip
+  impactTTSVG = TextToSVG.loadSync("/usr/share/fonts/truetype/msttcorefonts/Impact.ttf");
+  console.log("Impact font loaded ✅");
+} catch(e) {
+  console.warn("Impact system font not found, using Orbitron as fallback");
+  impactTTSVG = orbitronTTSVG;
 }
 
 async function downloadBuffer(url) {
@@ -24,27 +35,16 @@ async function downloadBuffer(url) {
   return Buffer.from(response.data);
 }
 
-function escapeXml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function estimateTextWidth(text, fontSize, font) {
-  const factor = font === "orbitron" ? 0.65 : 0.58;
-  return text.length * fontSize * factor;
-}
-
-function wrapText(text, fontSize, maxWidth, font) {
-  const processedText = font === "orbitron" ? text : text.toUpperCase();
+function wrapTextTTSVG(ttsvg, text, fontSize, maxWidth, uppercase) {
+  const processedText = uppercase ? text.toUpperCase() : text;
   const words = processedText.split(/\s+/);
   const lines = [];
   let line = "";
+
   for (const word of words) {
     const testLine = line ? `${line} ${word}` : word;
-    if (estimateTextWidth(testLine, fontSize, font) > maxWidth && line) {
+    const metrics = ttsvg.getMetrics(testLine, { fontSize });
+    if (metrics.width > maxWidth && line) {
       lines.push(line);
       line = word;
     } else {
@@ -55,63 +55,70 @@ function wrapText(text, fontSize, maxWidth, font) {
   return lines;
 }
 
-function createTextSvg(text, width, height, font = "impact") {
+function createTextOverlaySVG(text, width, height, font = "orbitron") {
   const isOrbitron = font === "orbitron";
-  const sidePadding = isOrbitron ? 60 : 90;
+  const ttsvg = isOrbitron ? orbitronTTSVG : (impactTTSVG || orbitronTTSVG);
+  const uppercase = !isOrbitron;
+
+  if (!ttsvg) {
+    console.warn("No font loaded, skipping text overlay");
+    return Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"></svg>`);
+  }
+
+  const sidePadding = 80;
   const maxTextWidth = width - sidePadding * 2;
   const maxLines = 3;
+  const bottomMargin = 80;
 
-  let fontSize = Math.floor(width * (isOrbitron ? 0.08 : 0.095));
-  const minFontSize = Math.floor(width * 0.04);
+  // Auto-scale font size
+  let fontSize = Math.floor(width * (isOrbitron ? 0.09 : 0.10));
+  const minFontSize = 40;
   let lines = [];
 
   while (fontSize >= minFontSize) {
-    lines = wrapText(text, fontSize, maxTextWidth, font);
-    const tooWide = lines.some(l => estimateTextWidth(l, fontSize, font) > maxTextWidth);
+    lines = wrapTextTTSVG(ttsvg, text, fontSize, maxTextWidth, uppercase);
+    const tooWide = lines.some(l => {
+      const m = ttsvg.getMetrics(l, { fontSize });
+      return m.width > maxTextWidth;
+    });
     if (lines.length <= maxLines && !tooWide) break;
     fontSize -= 4;
   }
 
   lines = lines.slice(0, maxLines);
 
-  const lineHeight = fontSize * (isOrbitron ? 1.25 : 1.05);
-  const bottomMargin = isOrbitron ? 80 : 60;
-  const totalHeight = lines.length * lineHeight;
-  const firstY = height - bottomMargin - totalHeight + fontSize;
-  const strokeWidth = Math.max(6, fontSize * (isOrbitron ? 0.06 : 0.1));
+  const strokeWidth = Math.max(6, fontSize * 0.07);
+  const lineHeight = fontSize * 1.25;
+  const totalTextHeight = lines.length * lineHeight;
+  const startY = height - bottomMargin - totalTextHeight;
 
-  const fontFamily = isOrbitron ? "Orbitron" : "Impact, Arial Black, sans-serif";
-  const fontWeight = isOrbitron ? "700" : "900";
+  // Build SVG paths for each line
+  const pathElements = lines.map((line, index) => {
+    const y = startY + index * lineHeight + fontSize;
+    const metrics = ttsvg.getMetrics(line, { fontSize });
+    const x = (width - metrics.width) / 2;
 
-  const fontDef = isOrbitron && orbitronBase64
-    ? `<defs><style>@font-face { font-family: 'Orbitron'; src: url('data:font/truetype;base64,${orbitronBase64}') format('truetype'); font-weight: 700; }</style></defs>`
-    : "";
+    // Get path data
+    const pathData = ttsvg.getD(line, {
+      x,
+      y,
+      fontSize,
+      anchor: "left top"
+    });
 
-  const textElements = lines.map((line, index) => `
-    <text
-      x="${width / 2}"
-      y="${firstY + index * lineHeight}"
-      text-anchor="middle"
-      font-family="${fontFamily}"
-      font-size="${fontSize}"
-      font-weight="${fontWeight}"
-      fill="white"
-      stroke="black"
-      stroke-width="${strokeWidth}"
-      paint-order="stroke fill"
-      stroke-linejoin="round"
-    >${escapeXml(line)}</text>
-  `).join("");
+    return `
+      <path d="${pathData}" fill="white" stroke="black" stroke-width="${strokeWidth}" stroke-linejoin="round" paint-order="stroke fill"/>
+    `;
+  }).join("");
 
   return Buffer.from(`
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      ${fontDef}
-      ${textElements}
+      ${pathElements}
     </svg>
   `);
 }
 
-async function prepareLogo(logoBuffer) {
+async function prepareLogo(logoBuffer, logoWidth = 120) {
   const logo = await sharp(logoBuffer)
     .ensureAlpha()
     .raw()
@@ -128,12 +135,12 @@ async function prepareLogo(logoBuffer) {
   return sharp(data, {
     raw: { width: logo.info.width, height: logo.info.height, channels: 4 }
   })
-    .resize({ width: 95 })
+    .resize({ width: logoWidth })
     .png()
     .toBuffer();
 }
 
-async function renderMeme(image_url, meme_text, logo_url, font = "impact") {
+async function renderMeme(image_url, meme_text, logo_url, font = "orbitron") {
   const width = 1080, height = 1080;
   const imageBuffer = await downloadBuffer(image_url);
   const baseImage = await sharp(imageBuffer)
@@ -146,14 +153,14 @@ async function renderMeme(image_url, meme_text, logo_url, font = "impact") {
   if (logo_url) {
     try {
       const logoBuffer = await downloadBuffer(logo_url);
-      const logo = await prepareLogo(logoBuffer);
+      const logo = await prepareLogo(logoBuffer, 120);
       overlays.push({ input: logo, left: 40, top: 40, blend: "over" });
     } catch(e) { console.warn("Logo failed:", e.message); }
   }
 
   if (meme_text && meme_text.trim()) {
     overlays.push({
-      input: createTextSvg(meme_text, width, height, font),
+      input: createTextOverlaySVG(meme_text, width, height, font),
       left: 0, top: 0, blend: "over"
     });
   }
@@ -161,7 +168,7 @@ async function renderMeme(image_url, meme_text, logo_url, font = "impact") {
   return sharp(baseImage).composite(overlays).jpeg({ quality: 95 }).toBuffer();
 }
 
-// ─── Original GDW endpoint ──────────────────────────────────────────────────
+// ─── GDW endpoint (Impact/Orbitron) ────────────────────────────────────────
 app.post("/render", async (req, res) => {
   const { image_url, meme_text, logo_url } = req.body;
   if (!image_url || !meme_text) {
@@ -177,9 +184,7 @@ app.post("/render", async (req, res) => {
   }
 });
 
-// ─── RenitschKI endpoint ────────────────────────────────────────────────────
-// font: "orbitron" | "impact" (default: orbitron)
-// meme_text: optional — wenn leer, nur Bild ohne Text
+// ─── RenitschKI endpoint (Orbitron) ────────────────────────────────────────
 app.post("/render-rk", async (req, res) => {
   const { image_url, meme_text, logo_url, font } = req.body;
   if (!image_url) {
