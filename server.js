@@ -1,11 +1,23 @@
 const express = require("express");
 const sharp = require("sharp");
 const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 
 const PORT = process.env.PORT || 3000;
+
+// Load Orbitron font as base64 for SVG embedding
+let orbitronBase64 = "";
+try {
+  const fontPath = path.join(__dirname, "Orbitron-Bold.ttf");
+  orbitronBase64 = fs.readFileSync(fontPath).toString("base64");
+  console.log("Orbitron font loaded ✅");
+} catch(e) {
+  console.warn("Orbitron font not found:", e.message);
+}
 
 async function downloadBuffer(url) {
   const response = await axios.get(url, { responseType: "arraybuffer" });
@@ -21,13 +33,13 @@ function escapeXml(text) {
 }
 
 function estimateTextWidth(text, fontSize, font) {
-  // Orbitron is slightly wider than Impact
   const factor = font === "orbitron" ? 0.65 : 0.58;
   return text.length * fontSize * factor;
 }
 
 function wrapText(text, fontSize, maxWidth, font) {
-  const words = (font === "orbitron" ? text : text.toUpperCase()).split(/\s+/);
+  const processedText = font === "orbitron" ? text : text.toUpperCase();
+  const words = processedText.split(/\s+/);
   const lines = [];
   let line = "";
   for (const word of words) {
@@ -49,7 +61,6 @@ function createTextSvg(text, width, height, font = "impact") {
   const maxTextWidth = width - sidePadding * 2;
   const maxLines = 3;
 
-  // Orbitron starts slightly smaller since it's wider
   let fontSize = Math.floor(width * (isOrbitron ? 0.08 : 0.095));
   const minFontSize = Math.floor(width * 0.04);
   let lines = [];
@@ -63,27 +74,17 @@ function createTextSvg(text, width, height, font = "impact") {
 
   lines = lines.slice(0, maxLines);
 
-  const lineHeight = fontSize * (isOrbitron ? 1.2 : 1.05);
+  const lineHeight = fontSize * (isOrbitron ? 1.25 : 1.05);
   const bottomMargin = isOrbitron ? 80 : 60;
   const totalHeight = lines.length * lineHeight;
   const firstY = height - bottomMargin - totalHeight + fontSize;
-  const strokeWidth = Math.max(6, fontSize * (isOrbitron ? 0.07 : 0.1));
+  const strokeWidth = Math.max(6, fontSize * (isOrbitron ? 0.06 : 0.1));
 
-  const fontFamily = isOrbitron
-    ? "Orbitron, Arial Black, sans-serif"
-    : "Impact, Arial Black, sans-serif";
+  const fontFamily = isOrbitron ? "Orbitron" : "Impact, Arial Black, sans-serif";
+  const fontWeight = isOrbitron ? "700" : "900";
 
-  const fontStyle = isOrbitron
-    ? `font-weight="700" letter-spacing="${Math.floor(fontSize * 0.05)}"`
-    : `font-weight="900"`;
-
-  // Google Fonts embed for Orbitron
-  const fontEmbed = isOrbitron
-    ? `<defs>
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&amp;display=swap');
-        </style>
-       </defs>`
+  const fontDef = isOrbitron && orbitronBase64
+    ? `<defs><style>@font-face { font-family: 'Orbitron'; src: url('data:font/truetype;base64,${orbitronBase64}') format('truetype'); font-weight: 700; }</style></defs>`
     : "";
 
   const textElements = lines.map((line, index) => `
@@ -93,7 +94,7 @@ function createTextSvg(text, width, height, font = "impact") {
       text-anchor="middle"
       font-family="${fontFamily}"
       font-size="${fontSize}"
-      ${fontStyle}
+      font-weight="${fontWeight}"
       fill="white"
       stroke="black"
       stroke-width="${strokeWidth}"
@@ -104,7 +105,7 @@ function createTextSvg(text, width, height, font = "impact") {
 
   return Buffer.from(`
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      ${fontEmbed}
+      ${fontDef}
       ${textElements}
     </svg>
   `);
@@ -132,8 +133,8 @@ async function prepareLogo(logoBuffer) {
     .toBuffer();
 }
 
-async function renderMeme(image_url, meme_text, logo_url, font = "impact", size = 1080) {
-  const width = size, height = size;
+async function renderMeme(image_url, meme_text, logo_url, font = "impact") {
+  const width = 1080, height = 1080;
   const imageBuffer = await downloadBuffer(image_url);
   const baseImage = await sharp(imageBuffer)
     .resize(width, height, { fit: "cover", position: "attention" })
@@ -150,7 +151,6 @@ async function renderMeme(image_url, meme_text, logo_url, font = "impact", size 
     } catch(e) { console.warn("Logo failed:", e.message); }
   }
 
-  // Only add text overlay if meme_text is provided
   if (meme_text && meme_text.trim()) {
     overlays.push({
       input: createTextSvg(meme_text, width, height, font),
@@ -161,7 +161,7 @@ async function renderMeme(image_url, meme_text, logo_url, font = "impact", size 
   return sharp(baseImage).composite(overlays).jpeg({ quality: 95 }).toBuffer();
 }
 
-// ─── Original GDW endpoint (Impact font, no changes) ───────────────────────
+// ─── Original GDW endpoint ──────────────────────────────────────────────────
 app.post("/render", async (req, res) => {
   const { image_url, meme_text, logo_url } = req.body;
   if (!image_url || !meme_text) {
@@ -177,10 +177,9 @@ app.post("/render", async (req, res) => {
   }
 });
 
-// ─── New RenitschKI endpoint ────────────────────────────────────────────────
+// ─── RenitschKI endpoint ────────────────────────────────────────────────────
 // font: "orbitron" | "impact" (default: orbitron)
-// meme_text: optional — if empty, just resizes image with optional logo
-// logo_url: optional
+// meme_text: optional — wenn leer, nur Bild ohne Text
 app.post("/render-rk", async (req, res) => {
   const { image_url, meme_text, logo_url, font } = req.body;
   if (!image_url) {
@@ -216,9 +215,9 @@ app.get("/test", async (req, res) => {
 });
 
 app.get("/test-rk", async (req, res) => {
-  const meme_text = req.query.text || "KEIN KAFFEE KEIN LEBEN";
+  const meme_text = req.query.text || "Kein Kaffee kein Leben";
   const image_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1779962765/gdw/meme_1779962763.png";
-  const logo_url = "https://res.cloudinary.com/deerouw5e/image/upload/RenitschKI_Logo_pwk8zq.png";
+  const logo_url = "https://res.cloudinary.com/deerouw5e/image/upload/v1780061506/Renitschki_Logo_plain_cro7vq.png";
   try {
     const result = await renderMeme(image_url, meme_text, logo_url, "orbitron");
     res.set("Content-Type", "image/jpeg");
