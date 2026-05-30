@@ -57,9 +57,15 @@ async function prepareLogo(buf, w = 120) {
   for (let i = 0; i < d.length; i += 4) if (d[i] < 20 && d[i+1] < 20 && d[i+2] < 20) d[i+3] = 0;
   return sharp(d, { raw: { width: l.info.width, height: l.info.height, channels: 4 } }).resize({ width: w }).png().toBuffer();
 }
-async function renderMeme(image_url, meme_text, logo_url, font = "orbitron") {
+async function renderMeme(imageInput, meme_text, logo_url, font = "orbitron") {
   const width = 1080, height = 1080;
-  const base = await sharp(await downloadBuffer(image_url)).resize(width, height, { fit: "cover", position: "attention" }).jpeg({ quality: 94 }).toBuffer();
+  let imageBuffer;
+  if (Buffer.isBuffer(imageInput)) {
+    imageBuffer = imageInput;
+  } else {
+    imageBuffer = await downloadBuffer(imageInput);
+  }
+  const base = await sharp(imageBuffer).resize(width, height, { fit: "cover", position: "attention" }).jpeg({ quality: 94 }).toBuffer();
   const overlays = [];
   if (logo_url) { try { overlays.push({ input: await prepareLogo(await downloadBuffer(logo_url)), left: 40, top: 40, blend: "over" }); } catch(e) {} }
   if (meme_text?.trim()) overlays.push({ input: createOverlay(meme_text, width, height, font), left: 0, top: 0, blend: "over" });
@@ -88,9 +94,10 @@ app.get("/debug-openai", async (req, res) => {
   try {
     const r = await axios.post("https://api.openai.com/v1/images/generations",
       { model: "gpt-image-1", prompt: "a funny cartoon cat", n: 1, size: "1024x1024" },
-      { headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 30000 }
+      { headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 60000 }
     );
-    res.json({ success: true, url: r.data.data[0].url, info });
+    const item = r.data.data[0];
+    res.json({ success: true, has_url: !!item.url, has_b64: !!item.b64_json, info });
   } catch(e) { res.json({ error: e.message, status: e.response?.status, openai_error: e.response?.data?.error, info }); }
 });
 const WITZE = [
@@ -139,16 +146,30 @@ async function generateImage() {
     { model: "gpt-image-1", prompt, n: 1, size: "1024x1024" },
     { headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 60000 }
   );
-  return r.data.data[0].url;
+  const item = r.data.data[0];
+  // gpt-image-1 returns b64_json, not url
+  if (item.b64_json) {
+    return Buffer.from(item.b64_json, "base64");
+  } else if (item.url) {
+    return await downloadBuffer(item.url);
+  } else {
+    throw new Error("No image data in response");
+  }
 }
 app.post("/meme-to-go", async (req, res) => {
   const witz = WITZE[Math.floor(Math.random() * WITZE.length)];
-  let imageUrl, fallback = false;
-  try { imageUrl = await generateImage(); console.log("OpenAI ✅"); }
-  catch(e) { console.warn("Fallback:", e.message); imageUrl = BGS[Math.floor(Math.random() * BGS.length)]; fallback = true; }
+  let imageInput, fallback = false;
+  try {
+    imageInput = await generateImage();
+    console.log("OpenAI ✅");
+  } catch(e) {
+    console.warn("Fallback:", e.message);
+    imageInput = BGS[Math.floor(Math.random() * BGS.length)];
+    fallback = true;
+  }
   try {
     res.set("Content-Type","image/jpeg"); res.set("Access-Control-Allow-Origin","*"); res.set("X-Fallback", fallback ? "1":"0");
-    res.send(await renderMeme(imageUrl, witz, LOGO, "orbitron"));
+    res.send(await renderMeme(imageInput, witz, LOGO, "orbitron"));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 app.get("/", (req, res) => res.send("RenitschKI Meme Renderer läuft 🚀"));
