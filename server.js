@@ -19,7 +19,7 @@ async function downloadBuffer(url) {
   const r = await axios.get(url, { responseType: "arraybuffer" });
   return Buffer.from(r.data);
 }
-function wrapTextTTSVG(ttsvg, text, fontSize, maxWidth, uppercase) {
+function wrapText(ttsvg, text, fontSize, maxWidth, uppercase) {
   const words = (uppercase ? text.toUpperCase() : text).split(/\s+/);
   const lines = []; let line = "";
   for (const w of words) {
@@ -30,25 +30,24 @@ function wrapTextTTSVG(ttsvg, text, fontSize, maxWidth, uppercase) {
   if (line) lines.push(line);
   return lines;
 }
-function createTextOverlaySVG(text, width, height, font = "orbitron") {
-  const isOrbitron = font === "orbitron";
-  const ttsvg = isOrbitron ? orbitronTTSVG : (impactTTSVG || orbitronTTSVG);
+function createOverlay(text, width, height, font = "orbitron") {
+  const isO = font === "orbitron";
+  const ttsvg = isO ? orbitronTTSVG : (impactTTSVG || orbitronTTSVG);
   if (!ttsvg) return Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"></svg>`);
-  const maxTextWidth = width - 160;
-  let fontSize = Math.floor(width * (isOrbitron ? 0.09 : 0.10));
+  const maxW = width - 160;
+  let fontSize = Math.floor(width * (isO ? 0.09 : 0.10));
   let lines = [];
   while (fontSize >= 40) {
-    lines = wrapTextTTSVG(ttsvg, text, fontSize, maxTextWidth, !isOrbitron);
-    if (lines.length <= 3 && !lines.some(l => ttsvg.getMetrics(l, { fontSize }).width > maxTextWidth)) break;
+    lines = wrapText(ttsvg, text, fontSize, maxW, !isO);
+    if (lines.length <= 3 && !lines.some(l => ttsvg.getMetrics(l, { fontSize }).width > maxW)) break;
     fontSize -= 4;
   }
   lines = lines.slice(0, 3);
   const sw = Math.max(6, fontSize * 0.07), lh = fontSize * 1.25;
-  const startY = height - (isOrbitron ? 160 : 80) - lines.length * lh;
+  const sy = height - (isO ? 160 : 80) - lines.length * lh;
   const paths = lines.map((line, i) => {
     const m = ttsvg.getMetrics(line, { fontSize });
-    const x = (width - m.width) / 2, y = startY + i * lh + fontSize;
-    return `<path d="${ttsvg.getD(line, { x, y, fontSize, anchor: "left top" })}" fill="white" stroke="black" stroke-width="${sw}" stroke-linejoin="round" paint-order="stroke fill"/>`;
+    return `<path d="${ttsvg.getD(line, { x: (width-m.width)/2, y: sy+i*lh+fontSize, fontSize, anchor:"left top" })}" fill="white" stroke="black" stroke-width="${sw}" stroke-linejoin="round" paint-order="stroke fill"/>`;
   }).join("");
   return Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`);
 }
@@ -63,18 +62,18 @@ async function renderMeme(image_url, meme_text, logo_url, font = "orbitron") {
   const base = await sharp(await downloadBuffer(image_url)).resize(width, height, { fit: "cover", position: "attention" }).jpeg({ quality: 94 }).toBuffer();
   const overlays = [];
   if (logo_url) { try { overlays.push({ input: await prepareLogo(await downloadBuffer(logo_url)), left: 40, top: 40, blend: "over" }); } catch(e) {} }
-  if (meme_text?.trim()) overlays.push({ input: createTextOverlaySVG(meme_text, width, height, font), left: 0, top: 0, blend: "over" });
+  if (meme_text?.trim()) overlays.push({ input: createOverlay(meme_text, width, height, font), left: 0, top: 0, blend: "over" });
   return sharp(base).composite(overlays).jpeg({ quality: 95 }).toBuffer();
 }
 app.post("/render", async (req, res) => {
   const { image_url, meme_text, logo_url } = req.body;
-  if (!image_url || !meme_text) return res.status(400).json({ error: "image_url und meme_text sind erforderlich" });
+  if (!image_url || !meme_text) return res.status(400).json({ error: "Missing params" });
   try { res.set("Content-Type", "image/jpeg"); res.send(await renderMeme(image_url, meme_text, logo_url, "impact")); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/render-rk", async (req, res) => {
   const { image_url, meme_text, logo_url, font } = req.body;
-  if (!image_url) return res.status(400).json({ error: "image_url ist erforderlich" });
+  if (!image_url) return res.status(400).json({ error: "Missing image_url" });
   try { res.set("Content-Type", "image/jpeg"); res.send(await renderMeme(image_url, meme_text || "", logo_url || null, font || "orbitron")); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -84,12 +83,12 @@ app.get("/test-rk", async (req, res) => {
 });
 app.get("/debug-openai", async (req, res) => {
   const raw = process.env.OPENAI_API_KEY || "";
-  const clean = raw.trim().replace(/[\n\r\t]/g, "");
-  const info = { raw_len: raw.length, clean_len: clean.length, prefix: clean.substring(0, 20), suffix: clean.slice(-6) };
+  const key = raw.trim().replace(/[\n\r\t]/g, "");
+  const info = { len: key.length, prefix: key.substring(0, 20), suffix: key.slice(-6) };
   try {
     const r = await axios.post("https://api.openai.com/v1/images/generations",
-      { model: "dall-e-2", prompt: "a funny cartoon cat", n: 1, size: "512x512" },
-      { headers: { "Authorization": `Bearer ${clean}`, "Content-Type": "application/json" }, timeout: 30000 }
+      { model: "gpt-image-1", prompt: "a funny cartoon cat", n: 1, size: "1024x1024" },
+      { headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 30000 }
     );
     res.json({ success: true, url: r.data.data[0].url, info });
   } catch(e) { res.json({ error: e.message, status: e.response?.status, openai_error: e.response?.data?.error, info }); }
@@ -135,10 +134,10 @@ async function generateImage() {
   if (!raw) throw new Error("no key");
   const key = raw.trim().replace(/[\n\r\t]/g, "");
   const themes = ["funny cartoon animals in an office","colorful cartoon dogs cooking","funny cartoon cats at a gym","cartoon penguins at a beach bar","funny cartoon frogs playing football"];
-  const prompt = themes[Math.floor(Math.random() * themes.length)] + ". Vibrant, funny, no text.";
+  const prompt = themes[Math.floor(Math.random() * themes.length)] + ". Vibrant, funny, no text in image.";
   const r = await axios.post("https://api.openai.com/v1/images/generations",
-    { model: "dall-e-2", prompt, n: 1, size: "512x512" },
-    { headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 45000 }
+    { model: "gpt-image-1", prompt, n: 1, size: "1024x1024" },
+    { headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 60000 }
   );
   return r.data.data[0].url;
 }
